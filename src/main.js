@@ -9,6 +9,8 @@ import { storage } from './storage.js';
 import { CHARACTERS, BUILD_LABEL, getCharacter } from './characters.js';
 import { buildCharacter } from './characterFactory.js';
 import { boxB } from './voxel.js';
+import { biomeAt, biomeIndex, BIOMES } from './biomes.js';
+import { gradientTexture, groundTexture, texMat } from './textures.js';
 import { WATER_Y, difficulty } from './config.js';
 
 const CAM_OFFSET = new THREE.Vector3(2.4, 10, 6.2);
@@ -22,17 +24,22 @@ class Game {
     this.renderer = new THREE.WebGLRenderer({ antialias: dpr < 2, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(dpr);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    const isMobile = matchMedia('(pointer: coarse)').matches;
+    this.isTouch = isMobile;
+    // soft shadows on desktop, cheaper filtering on phones
+    this.renderer.shadowMap.type = isMobile ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     document.getElementById('game').appendChild(this.renderer.domElement);
 
     // --- world scene ----------------------------------------------------------
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(SKY);
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
-    this.scene.add(new THREE.HemisphereLight('#ffffff', '#6a7a8a', 1.6));
-    this.sun = new THREE.DirectionalLight('#fff4e0', 2.2);
+    // Sky/ground hemisphere fill + warm key light; both are re-tinted per biome.
+    this.hemi = new THREE.HemisphereLight('#dff1ff', '#6a6a5a', 1.7);
+    this.scene.add(this.hemi);
+    this.sun = new THREE.DirectionalLight('#fff4e0', 2.3);
     this.sun.castShadow = true;
-    const isMobile = matchMedia('(pointer: coarse)').matches;
+    this.sun.shadow.radius = 3;
     this.sun.shadow.mapSize.set(isMobile ? 1024 : 2048, isMobile ? 1024 : 2048);
     const sc = this.sun.shadow.camera;
     sc.left = -14; sc.right = 14; sc.top = 16; sc.bottom = -16; sc.near = 1; sc.far = 50;
@@ -45,7 +52,7 @@ class Game {
 
     // --- preview scene (character select) ------------------------------------
     this.preview = new THREE.Scene();
-    this.preview.background = new THREE.Color('#5aa9e0');
+    this.preview.background = gradientTexture('#8fd6ff', '#3f8fd0');
     this.previewCam = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
     this.previewCam.position.set(0, 1.5, 5.6);
     this.previewCam.lookAt(0, 0.35, 0);
@@ -54,8 +61,12 @@ class Game {
     key.position.set(2, 4, 3);
     this.preview.add(key);
     this.pedestal = new THREE.Group();
-    this.pedestal.add(boxB(1.4, 0.25, 1.4, '#9ad86a', 0, -0.25, 0, false));
-    this.pedestal.add(boxB(1.5, 0.12, 1.5, '#7bb553', 0, -0.37, 0, false));
+    const pedTop = texMat('pedestal', groundTexture('#9ad86a', BIOMES[0].flowers, 5), 0.5, 1);
+    const pedSide = texMat('pedestal-side', groundTexture('#8a6a45', [], 6, false), 0.5, 1);
+    const top = boxB(1.4, 0.25, 1.4, '#ffffff', 0, -0.25, 0, false);
+    top.material = [pedSide, pedSide, pedTop, pedSide, pedSide, pedSide];
+    this.pedestal.add(top);
+    this.pedestal.add(boxB(1.55, 0.14, 1.55, '#6d5236', 0, -0.39, 0, false));
     this.preview.add(this.pedestal);
     this.previewModels = new Map();
 
@@ -88,6 +99,9 @@ class Game {
     this.ui.setCoins(this.coins);
     this.ui.setBest(this.best);
     this.ui.setMuted(this.audio.muted);
+    this.ui.setCharName(getCharacter(this.selected).name);
+    this.ui.setUnlockBadge(this.canUnlockAny());
+    this.tint = { sky: new THREE.Color(), sun: new THREE.Color() };
 
     this.input = new Input({
       onDir: (d) => this.onDir(d),
@@ -124,7 +138,23 @@ class Game {
     this.idleT = 0;
     this.deathT = 0;
     this.cause = null;
+    this.hitStop = 0;
+    this.toldBest = false;
+    this.biomeIdx = 0;
     this.ui.setScore(0, this.best);
+    this.ui.setDanger(0);
+  }
+
+  canUnlockAny() {
+    return CHARACTERS.some((c) => !this.unlocked.has(c.id) && this.coins >= c.cost);
+  }
+
+  vibrate(ms) {
+    try {
+      navigator.vibrate?.(ms);
+    } catch {
+      /* not supported */
+    }
   }
 
   play() {
@@ -132,12 +162,15 @@ class Game {
     if (this.state !== 'title') this.resetRun();
     this.state = 'playing';
     this.ui.show('hud');
+    if (!storage.tutorialSeen) this.ui.tutorial(true, this.isTouch);
   }
 
   toMenu() {
     this.resetRun();
     this.state = 'title';
     this.ui.setBest(this.best);
+    this.ui.setUnlockBadge(this.canUnlockAny());
+    this.ui.tutorial(false);
     this.ui.show('title');
   }
 
@@ -161,6 +194,7 @@ class Game {
   }
 
   openSelect() {
+    this.selectFrom = this.state;
     this.state = 'select';
     this.selectIndex = Math.max(0, CHARACTERS.findIndex((c) => c.id === this.selected));
     this.showPreview();
@@ -168,7 +202,9 @@ class Game {
   }
 
   closeSelect() {
+    if (this.selectFrom === 'over') return this.toMenu();
     this.state = 'title';
+    this.ui.setUnlockBadge(this.canUnlockAny());
     this.ui.show('title');
   }
 
@@ -195,6 +231,7 @@ class Game {
     this.selected = c.id;
     storage.selected = c.id;
     this.player.setCharacter(c);
+    this.ui.setCharName(c.name);
     this.showPreview();
   }
 
@@ -229,6 +266,10 @@ class Game {
     } else if (this.state === 'playing') {
       this.player.input(dir);
       this.started = true;
+    }
+    if (this.state === 'playing' && !storage.tutorialSeen) {
+      storage.tutorialSeen = true;
+      setTimeout(() => this.ui.tutorial(false), 600);
     } else if (this.state === 'select' && (dir === 'left' || dir === 'right')) {
       this.browse(dir === 'left' ? -1 : 1);
     }
@@ -265,14 +306,25 @@ class Game {
     if (p.maxRow > this.score) {
       this.score = p.maxRow;
       this.idleT = 0;
-      this.ui.setScore(this.score, this.best);
+      this.ui.setScore(this.score, this.best, true);
+      if (!this.toldBest && this.best > 0 && this.score > this.best) {
+        this.toldBest = true;
+        this.ui.toast('★ NEW BEST! ★', 'gold');
+      }
+      const bi = biomeIndex(this.score);
+      if (bi !== this.biomeIdx) {
+        this.biomeIdx = bi;
+        const b = BIOMES[bi];
+        this.ui.toast(`${b.icon} ${b.name}`);
+      }
     }
     if (this.world.takeCoin(p.row, p.x)) {
       this.coins++;
       this.runCoins++;
       storage.coins = this.coins;
-      this.ui.setCoins(this.coins);
+      this.ui.setCoins(this.coins, true);
       this.audio.coin();
+      this.vibrate(15);
       this.effects.sparkle(p.root.position.clone().setY(0.5));
     }
     if (lane.type === 'road' && this.hornCooldown <= 0 && lane.approachDistance(p.x) < 2.2) {
@@ -286,13 +338,18 @@ class Game {
     this.cause = type;
     this.state = 'dying';
     this.deathT = 0;
+    this.ui.setDanger(0);
+    this.vibrate(type === 'drown' ? 120 : [60, 40, 90]);
     if (type === 'squash' || type === 'train') {
       this.audio.squash();
       if (type === 'squash') this.audio.horn();
       this.effects.dust(p.root.position.clone().setY(0.2), '#ffffff');
       this.shake = 0.35;
+      this.hitStop = 0.09; // brief freeze sells the impact
+      this.ui.flash('#ffffff');
     } else if (type === 'drown') {
       this.audio.splash();
+      this.ui.flash('#bfe9ff');
       this.effects.splash(new THREE.Vector3(p.x, WATER_Y + 0.05, p.root.position.z));
     } else {
       p.die('eagle');
@@ -310,7 +367,14 @@ class Game {
     this.state = 'over';
     this.audio.gameOver();
     this.ui.setBest(this.best);
-    this.ui.showGameOver({ score: this.score, best: this.best, coins: this.runCoins, newBest, cause: this.cause });
+    this.ui.showGameOver({
+      score: this.score,
+      best: this.best,
+      coins: this.runCoins,
+      newBest,
+      cause: this.cause,
+      canUnlock: this.canUnlockAny(),
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -358,7 +422,12 @@ class Game {
       return;
     }
 
+    if (this.hitStop > 0) {
+      this.hitStop -= dt;
+      return;
+    }
     this.hornCooldown -= dt;
+    this.updateAtmosphere(dt);
     this.world.update(dt);
     for (const ev of this.world.events) {
       const near = Math.abs(ev.row - this.player.row) < 8 && s !== 'title';
@@ -377,6 +446,11 @@ class Game {
       const lingering = this.idleT > IDLE_LIMIT;
       if (p.alive && !p.hop && (lingering || p.visualRow < this.camRow - this.killRows)) {
         this.onDeath('eagle');
+      } else {
+        // warn the player before the eagle arrives
+        const behind = (this.camRow - this.killRows + 1.6 - p.visualRow) / 1.6;
+        const idle = (this.idleT - IDLE_LIMIT + 3) / 3;
+        this.ui.setDanger(Math.max(0, Math.min(1, Math.max(behind, idle))) * 0.9);
       }
     } else if (this.state === 'dying') {
       this.updateCamera(dt, false);
@@ -386,6 +460,17 @@ class Game {
       this.updateCamera(dt, false);
     }
     this.world.ensure(this.camRow);
+  }
+
+  /** Ease sky colour and light tint toward the current biome. */
+  updateAtmosphere(dt) {
+    const b = biomeAt(Math.round(this.camRow + 4));
+    const k = 1 - Math.exp(-dt * 1.5);
+    this.tint.sky.set(b.sky);
+    this.scene.background.lerp(this.tint.sky, k);
+    this.hemi.color.lerp(this.tint.sky.clone().lerp(new THREE.Color('#ffffff'), 0.55), k);
+    this.tint.sun.set(b.sun || '#fff4e0');
+    this.sun.color.lerp(this.tint.sun, k);
   }
 
   updateCamera(dt, follow) {

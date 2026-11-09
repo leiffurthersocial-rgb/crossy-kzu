@@ -4,11 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#7cc6f0" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>Crossy KZU</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="game"></div>
+    <div id="flash"></div>
+    <div id="vignette"></div>
 
     <div id="ui">
       <!-- HUD -->
@@ -18,11 +21,30 @@
           <div id="hud-best">TOP 0</div>
         </div>
         <div class="hud-right">
-          <div class="coin-pill"><span class="coin-icon"></span><span id="hud-coins">0</span></div>
+          <div class="coin-pill" id="hud-coin-pill"><span class="coin-icon"></span><span id="hud-coins">0</span></div>
           <button id="btn-mute" class="icon-btn" aria-label="Toggle sound"></button>
           <button id="btn-pause" class="icon-btn" aria-label="Pause">
-            <svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" /><rect x="14" y="5" width="4" height="14" /></svg>
+            <svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
           </button>
+        </div>
+      </div>
+
+      <div id="toasts"></div>
+
+      <!-- First-run tutorial -->
+      <div id="tutorial" class="hidden">
+        <div class="tut-card">
+          <div class="tut-touch">
+            <div class="hand"></div>
+            <b>TAP</b> to hop forward<br /><b>SWIPE</b> to move any way
+          </div>
+          <div class="tut-keys">
+            <div class="keys">
+              <span class="key k-up">↑</span>
+              <span class="key k-left">←</span><span class="key k-down">↓</span><span class="key k-right">→</span>
+            </div>
+            <b>ARROWS</b> or <b>WASD</b> to hop
+          </div>
         </div>
       </div>
 
@@ -33,14 +55,17 @@
             <span class="logo-row" id="logo-a"></span>
             <span class="logo-row" id="logo-b"></span>
           </h1>
-          <button id="btn-play" class="btn btn-play">PLAY</button>
-          <button id="btn-chars" class="btn btn-secondary">CHARACTERS</button>
+          <button id="btn-play" class="btn btn-play"><span class="play-tri"></span>PLAY</button>
+          <button id="btn-chars" class="btn btn-secondary">
+            CHARACTERS <span id="title-badge" class="badge hidden">NEW</span>
+          </button>
           <div class="title-stats">
-            <span>BEST <b id="title-best">0</b></span>
-            <span class="coin-pill small"><span class="coin-icon"></span><b id="title-coins">0</b></span>
+            <span class="stat-chip">🏆 <b id="title-best">0</b></span>
+            <span class="stat-chip"><span class="coin-icon"></span><b id="title-coins">0</b></span>
+            <span class="stat-chip">🙂 <b id="title-char">Robin</b></span>
           </div>
-          <div class="hint">Arrows / WASD &nbsp;·&nbsp; Swipe or tap</div>
         </div>
+        <div class="start-hint" id="start-hint">or just start hopping!</div>
       </div>
 
       <!-- Character select -->
@@ -49,11 +74,13 @@
           <button id="btn-back" class="btn btn-small">‹ BACK</button>
           <div class="coin-pill"><span class="coin-icon"></span><span id="select-coins">0</span></div>
         </div>
-        <button id="btn-prev" class="arrow-btn left" aria-label="Previous">‹</button>
-        <button id="btn-next" class="arrow-btn right" aria-label="Next">›</button>
+        <button id="btn-prev" class="arrow-btn left" aria-label="Previous character">‹</button>
+        <button id="btn-next" class="arrow-btn right" aria-label="Next character">›</button>
         <div class="select-bottom screen-panel">
+          <div id="char-lock" class="lock-tag hidden">🔒 LOCKED</div>
           <div id="char-name" class="char-name">Robin</div>
           <div id="char-desc" class="char-desc"></div>
+          <div id="char-progress" class="progress hidden"><i id="char-progress-fill"></i><span id="char-progress-text"></span></div>
           <div id="char-dots" class="dots"></div>
           <button id="btn-choose" class="btn btn-play">SELECT</button>
         </div>
@@ -63,6 +90,7 @@
       <div id="screen-pause" class="screen hidden dim">
         <div class="screen-panel card">
           <h2>PAUSED</h2>
+          <div class="pause-score">SCORE <b id="pause-score">0</b></div>
           <button id="btn-resume" class="btn btn-play">RESUME</button>
           <button id="btn-pause-menu" class="btn btn-secondary">MENU</button>
         </div>
@@ -70,16 +98,22 @@
 
       <!-- Game over -->
       <div id="screen-over" class="screen hidden">
-        <div class="screen-panel card">
+        <div class="screen-panel card over-card">
+          <div id="over-icon" class="over-icon">💥</div>
           <h2 id="over-title">GAME OVER</h2>
           <div class="over-stats">
             <div><span>SCORE</span><b id="over-score">0</b></div>
             <div><span>BEST</span><b id="over-best">0</b></div>
             <div><span>COINS</span><b id="over-coins">+0</b></div>
           </div>
-          <div id="over-new" class="new-best hidden">NEW BEST!</div>
-          <button id="btn-retry" class="btn btn-play">RETRY</button>
-          <button id="btn-menu" class="btn btn-secondary">MENU</button>
+          <div id="over-new" class="new-best hidden">★ NEW BEST! ★</div>
+          <div id="over-unlock" class="unlock-hint hidden">You can unlock a new character!</div>
+          <button id="btn-retry" class="btn btn-play">↻ RETRY</button>
+          <div class="btn-row">
+            <button id="btn-menu" class="btn btn-secondary btn-half">MENU</button>
+            <button id="btn-over-chars" class="btn btn-secondary btn-half">CHARACTERS</button>
+          </div>
+          <div class="hint dark">Enter / Space to retry</div>
         </div>
       </div>
     </div>

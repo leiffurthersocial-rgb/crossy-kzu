@@ -26,6 +26,8 @@ export const storage = {
   set unlocked(v) { write('unlocked', v); },
   get selected() { return read('selected', 'robin'); },
   set selected(v) { write('selected', v); },
+  get tutorialSeen() { return read('tutorialSeen', false); },
+  set tutorialSeen(v) { write('tutorialSeen', v); },
   get muted() { return read('muted', false); },
   set muted(v) { write('muted', v); },
 };

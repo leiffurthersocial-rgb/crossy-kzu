@@ -8,6 +8,7 @@
 export const SKIN = {
   pale: '#f6dfcc',
   light: '#f1cba8',
+  lightTan: '#e2b086',
   tan: '#d29a6a',
   olive: '#c09060',
   bronze: '#a8703f',
@@ -27,7 +28,7 @@ export const CHARACTERS = [
     name: 'Robin',
     cost: 0,
     build: 'normal',
-    skin: SKIN.light,
+    skin: SKIN.lightTan,
     eyes: EYES.brown,
     hair: { style: 'short', color: '#e8c55a' },
     shirt: '#3d8be0',

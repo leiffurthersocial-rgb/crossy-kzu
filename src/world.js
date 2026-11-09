@@ -5,20 +5,71 @@ import {
   HALF_COLS, WRAP, LOOP, GROUND_WIDTH, LANES_AHEAD, LANES_BEHIND, FIRST_ROW,
   WATER_Y, difficulty,
 } from './config.js';
+import { asphaltTexture, gravelTexture, noiseTexture, waterTexture, texMat } from './textures.js';
+import { biomeAt, biomeGroundTex } from './biomes.js';
 import {
-  pools, paint, shapeLog, shapeTree, makeSignal, CAR_COLORS, TRUCK_COLORS, LIGHT_ON, LIGHT_OFF,
+  pools, paint, shapeLog, shapeTree, shapeRock, makeSignal, CAR_COLORS, TRUCK_COLORS, LIGHT_ON, LIGHT_OFF,
 } from './entities.js';
 
 const CENTER_W = HALF_COLS * 2 + 1;
 const SIDE_W = (GROUND_WIDTH - CENTER_W) / 2;
 const SIDE_X = CENTER_W / 2 + SIDE_W / 2;
 
-const GROUND = {
-  grass: { a: '#9ad86a', b: '#8fcf60', sa: '#6d9f4a', sb: '#679846', y: 0 },
-  road: { a: '#555861', b: '#555861', sa: '#383a40', sb: '#383a40', y: 0 },
-  river: { a: '#5cc3f2', b: '#5cc3f2', sa: '#4294c4', sb: '#4294c4', y: WATER_Y },
-  rail: { a: '#9c9085', b: '#968a7f', sa: '#6f665e', sb: '#6a625a', y: 0 },
-};
+const THICK = 0.4;
+const SIDE_TINT = '#a4a4a4'; // out-of-bounds strips are darker
+const ASPHALT = asphaltTexture();
+const GRAVEL = gravelTexture();
+const NOISE = noiseTexture(17);
+const WATER_TEX = [waterTexture(), waterTexture()];
+
+// Ground boxes use a cube whose faces are regrouped into just two draw groups,
+// sides (material 0) and top (material 1), so a textured top costs 2 draw calls, not 6.
+const GROUND_BOX = (() => {
+  const g = BOX.clone();
+  const idx = Array.from(g.index.array);
+  const face = (f) => idx.slice(f * 6, f * 6 + 6);
+  const order = [0, 1, 3, 4, 5, 2]; // +x, -x, -y, +z, -z, then +y (top)
+  g.setIndex(order.flatMap(face));
+  g.clearGroups();
+  g.addGroup(0, 30, 0);
+  g.addGroup(30, 6, 1);
+  return g;
+})();
+function boxMats(top, side) {
+  return [side, top];
+}
+const groundCache = new Map();
+function groundMats(key, makeTop, sideColor) {
+  let m = groundCache.get(key);
+  if (!m) {
+    const c = makeTop(CENTER_W, '#ffffff');
+    const sd = makeTop(SIDE_W, SIDE_TINT);
+    const edge = mat(sideColor);
+    m = { center: boxMats(c, edge), side: boxMats(sd, edge) };
+    groundCache.set(key, m);
+  }
+  return m;
+}
+
+// Water textures scroll with the current; one set per flow direction.
+const waterMats = [];
+function waterMat(dir, rx, tint) {
+  const k = `water${dir}|${rx}|${tint}`;
+  let m = groundCache.get(k);
+  if (!m) {
+    const t = WATER_TEX[dir > 0 ? 0 : 1].clone();
+    t.repeat.set(rx / 2, 1);
+    t.needsUpdate = true;
+    t.userData.dir = dir;
+    m = new THREE.MeshLambertMaterial({ map: t, color: tint });
+    waterMats.push(m);
+    groundCache.set(k, m);
+  }
+  return m;
+}
+export function animateWater(dt) {
+  for (const m of waterMats) m.map.offset.x -= m.map.userData.dir * dt * 0.18;
+}
 
 function wrapX(x) {
   return ((((x + WRAP) % LOOP) + LOOP) % LOOP) - WRAP;
@@ -31,43 +82,57 @@ class Lane {
   constructor(type) {
     this.type = type;
     this.group = new THREE.Group();
-    const g = GROUND[type];
-    const thick = 0.4;
-    this.center = box(CENTER_W, thick, 1, g.a, 0, g.y - thick / 2, 0, false);
-    this.left = box(SIDE_W, thick, 1, g.sa, -SIDE_X, g.y - thick / 2, 0, false);
-    this.right = box(SIDE_W, thick, 1, g.sa, SIDE_X, g.y - thick / 2, 0, false);
+    const y = type === 'river' ? WATER_Y : 0;
+    this.center = box(CENTER_W, THICK, 1, '#ffffff', 0, y - THICK / 2, 0, false);
+    this.left = box(SIDE_W, THICK, 1, '#ffffff', -SIDE_X, y - THICK / 2, 0, false);
+    this.right = box(SIDE_W, THICK, 1, '#ffffff', SIDE_X, y - THICK / 2, 0, false);
     for (const m of [this.center, this.left, this.right]) {
+      m.geometry = GROUND_BOX;
+      m.material = [mat('#888888'), mat('#ffffff')];
       m.receiveShadow = true;
       this.group.add(m);
     }
-    if (type === 'river') {
-      // dark bank strip under the water so the river reads as sunken
-      this.group.add(box(GROUND_WIDTH, 0.3, 1, '#3a7fb0', 0, WATER_Y - 0.55, 0, false));
-    }
     if (type === 'road') {
-      // dashed lane separator on the boundary toward the previous row (+Z)
+      const ms = groundMats('road', (w, c) => texMat('asphalt', ASPHALT, w, 1, c), '#3f3f44');
+      this.center.material = ms.center;
+      this.left.material = this.right.material = ms.side;
+      // dashed separator toward the previous row (+Z) and solid edge lines
       this.dashes = new THREE.Group();
       for (let x = -WRAP - 4; x <= WRAP + 4; x += 2) {
-        this.dashes.add(box(0.8, 0.02, 0.08, '#e8e8e8', x, 0.005, 0.5, false));
+        this.dashes.add(box(0.8, 0.02, 0.07, '#f2f2f2', x, 0.005, 0.5, false));
       }
-      this.group.add(this.dashes);
+      this.edgeBack = box(GROUND_WIDTH, 0.02, 0.06, '#e8e2c8', 0, 0.005, 0.44, false);
+      this.edgeFront = box(GROUND_WIDTH, 0.02, 0.06, '#e8e2c8', 0, 0.005, -0.44, false);
+      this.group.add(this.dashes, this.edgeBack, this.edgeFront);
+    }
+    if (type === 'river') {
+      // sunken river bed + foam where the river meets land
+      this.group.add(box(GROUND_WIDTH, 0.3, 1, '#2f6f9e', 0, WATER_Y - 0.55, 0, false));
+      this.edgeBack = box(GROUND_WIDTH, 0.03, 0.09, '#e9f8ff', 0, WATER_Y + 0.005, 0.45, false);
+      this.edgeFront = box(GROUND_WIDTH, 0.03, 0.09, '#e9f8ff', 0, WATER_Y + 0.005, -0.45, false);
+      this.group.add(this.edgeBack, this.edgeFront);
     }
     if (type === 'rail') {
+      const ms = groundMats('rail', (w, c) => texMat('gravel', GRAVEL, w, 1, c), '#6d645b');
+      this.center.material = ms.center;
+      this.left.material = this.right.material = ms.side;
       const n = GROUND_WIDTH;
-      const sleepers = new THREE.InstancedMesh(BOX, mat('#6e5138'), n);
+      const sleepers = new THREE.InstancedMesh(BOX, texMat('noise', NOISE, 1, 1, '#7a5638'), n);
       const m4 = new THREE.Matrix4();
       for (let i = 0; i < n; i++) {
         m4.compose(
           new THREE.Vector3(-GROUND_WIDTH / 2 + i + 0.5, 0.03, 0),
           new THREE.Quaternion(),
-          new THREE.Vector3(0.22, 0.06, 0.9),
+          new THREE.Vector3(0.24, 0.07, 0.92),
         );
         sleepers.setMatrixAt(i, m4);
       }
       sleepers.receiveShadow = true;
       this.group.add(sleepers);
-      this.group.add(box(GROUND_WIDTH, 0.08, 0.08, '#b8bec5', 0, 0.1, 0.26, false));
-      this.group.add(box(GROUND_WIDTH, 0.08, 0.08, '#b8bec5', 0, 0.1, -0.26, false));
+      for (const z of [0.26, -0.26]) {
+        this.group.add(box(GROUND_WIDTH, 0.08, 0.09, '#8d949b', 0, 0.1, z, false));
+        this.group.add(box(GROUND_WIDTH, 0.02, 0.05, '#e3e8ec', 0, 0.15, z, false)); // polished top
+      }
       this.signal = makeSignal();
       this.signal.position.set(HALF_COLS + 1.2, 0, 0.42);
       this.group.add(this.signal);
@@ -78,14 +143,19 @@ class Lane {
     this.coin = null;
   }
 
-  setup(row, prev) {
+  setup(row, prev, biome) {
     this.row = row;
+    this.biome = biome;
     this.group.position.set(0, 0, -row);
-    const g = GROUND[this.type];
     const odd = row & 1;
-    this.center.material = mat(odd ? g.b : g.a);
-    this.left.material = this.right.material = mat(odd ? g.sb : g.sa);
+    if (this.type === 'grass') {
+      const ms = groundMats(`grass-${biome.id}-${odd}`, (w, c) => texMat(`g-${biome.id}-${odd}`, biomeGroundTex(biome, odd), w / 4, 1, c), biome.dirt);
+      this.center.material = ms.center;
+      this.left.material = this.right.material = ms.side;
+    }
     if (this.dashes) this.dashes.visible = !!prev && prev.type === 'road';
+    if (this.edgeBack) this.edgeBack.visible = !prev || prev.type !== this.type;
+    if (this.edgeFront) this.edgeFront.visible = true; // updated when the next lane spawns
     this.speed = 0;
     this.blocked.clear();
     this.entities.length = 0;
@@ -95,6 +165,17 @@ class Lane {
     this.timer = 0;
     this.blink = 0;
     this.train = null;
+  }
+
+  setNext(next) {
+    if (this.edgeFront) this.edgeFront.visible = next.type !== this.type;
+  }
+
+  applyWater() {
+    const dir = this.speed >= 0 ? 1 : -1;
+    const edge = mat('#3f86b8');
+    this.center.material = [edge, waterMat(dir, CENTER_W, '#ffffff')];
+    this.left.material = this.right.material = [edge, waterMat(dir, SIDE_W, '#b9c6d0')];
   }
 
   addEntity(kind, x, len) {
@@ -273,6 +354,7 @@ export class World {
   }
 
   update(dt) {
+    animateWater(dt);
     for (const lane of this.lanes.values()) lane.update(dt, this.events);
   }
 
@@ -300,7 +382,9 @@ export class World {
     const type = this.pickType(row);
     const lane = this.lanePool[type].pop() || new Lane(type);
     const prev = this.lanes.get(row - 1);
-    lane.setup(row, prev);
+    const biome = biomeAt(row);
+    lane.setup(row, prev, biome);
+    if (prev) prev.setNext(lane);
     lane.rng = this.rng;
     const d = difficulty(row);
     if (type === 'grass') this.genGrass(lane, row, d);
@@ -328,18 +412,21 @@ export class World {
       if (row <= 3) lane.blocked.delete(0);
       this.ensurePassable(lane);
     }
-    for (const c of lane.blocked) {
-      const kind = rng.chance(0.75) ? 'tree' : 'rock';
-      const m = lane.addStatic(kind, c);
-      if (kind === 'tree') shapeTree(m, rng);
-    }
+    const biome = lane.biome;
+    const place = (c, allowRock) => {
+      if (allowRock && rng.chance(0.25)) {
+        shapeRock(lane.addStatic('rock', c), biome);
+      } else {
+        const kind = rng.pick(biome.trees);
+        const m = lane.addStatic(kind, c);
+        shapeTree(m, rng, biome, kind);
+      }
+    };
+    for (const c of lane.blocked) place(c, true);
     // scenery outside the playable strip
     for (let i = H + 1; i <= H + 7; i++) {
       for (const c of [i, -i]) {
-        if (row <= -4 || rng.chance(i === H + 1 ? 0.7 : 0.35)) {
-          const m = lane.addStatic('tree', c);
-          shapeTree(m, rng);
-        }
+        if (row <= -4 || rng.chance(i === H + 1 ? 0.7 : i <= H + 3 ? 0.35 : 0.22)) place(c, i > H + 2);
       }
     }
   }
@@ -416,6 +503,11 @@ export class World {
       used += len + gap;
     }
     this.layout(lane, kinds, lens, minGap, 1.5);
+    if (rng.chance(0.4)) {
+      const side = rng.chance(0.5) ? 1 : -1;
+      const lamp = lane.addStatic('lamp', side * (HALF_COLS + 1.4));
+      lamp.rotation.y = side > 0 ? Math.PI : 0;
+    }
     const color = rng.pick(truckLane ? TRUCK_COLORS : CAR_COLORS);
     for (const e of lane.entities) {
       paint(e.mesh, rng.chance(0.6) ? color : rng.pick(e.kind === 'truck' ? TRUCK_COLORS : CAR_COLORS));
@@ -453,6 +545,7 @@ export class World {
       this.layout(lane, kinds, lens, 1.0, 0.5);
     }
     for (const e of lane.entities) e.mesh.rotation.y = 0; // logs/pads are symmetric
+    lane.applyWater();
   }
 
   genRail(lane, d) {

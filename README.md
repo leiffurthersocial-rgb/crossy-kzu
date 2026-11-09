@@ -31,6 +31,8 @@ Inputs are buffered (up to 3), so quick presses chain into consecutive hops.
 - **Railways** flash and ring a bell before a fast train comes through.
 - The camera slowly moves forward. If you fall behind it, or make no forward progress for 9 seconds, an eagle grabs you.
 - Your score is the furthest lane you reach. Coins are saved across runs and unlock characters.
+- The map changes biome every 40 lanes: **Sunny Meadow → Autumn Woods → Frosty Peaks → Sunset Dunes**, then repeats. Each biome has its own ground, scenery (oak, pine, cactus, palm), rocks and lighting tint.
+- The screen edges glow red shortly before the eagle comes, so you get a warning.
 
 ## Adding a character
 
@@ -64,6 +66,8 @@ The character select screen picks up new entries automatically. To add a new hai
 | `src/player.js` | Grid movement, hop arc, input queue, log riding, collisions, death animations |
 | `src/characterFactory.js` | Shared voxel humanoid rig (head, torso, arms, legs) built from character parameters |
 | `src/characters.js` | Character roster data |
+| `src/textures.js` | Pixel-art textures painted on canvases at startup (grass, asphalt, gravel, water, bark, leaves) |
+| `src/biomes.js` | Biome table (palettes, scenery sets, sky/sun tint) and per-biome ground textures |
 | `src/effects.js` | Particles (splash, dust, sparkle) and the eagle |
 | `src/ui.js` | DOM screens and HUD |
 | `src/audio.js` | Synthesised sound effects |
@@ -75,4 +79,6 @@ The character select screen picks up new entries automatically. To add a new hai
 
 - **Passability:** consecutive grass lanes always share an open run of tiles reachable from the previous lane. Every grass lane keeps at least 3 open tiles. Vehicles keep a minimum gap that scales with speed. Logs keep a maximum gap, and adjacent river lanes flow in opposite directions.
 - **Difficulty:** as the score grows, road and river lanes get more frequent, road runs get longer, vehicles and logs get faster, and the camera moves forward faster.
+- **Textures:** all textures are generated in code on small canvases with nearest-neighbour filtering, so they stay crisp and blocky. Water scrolls with the current. Ground boxes use a two-group cube (top + sides), so a textured lane costs 2 draw calls, not 6.
+- **Feedback:** score and coin pops, biome and new-best toasts, a hit-stop, screen flash and vibration on death, a first-run tutorial, and 48px+ touch targets.
 - **Performance:** all meshes share one unit cube geometry and a cached material per colour. Lanes and moving entities are pooled and recycled once they fall behind the camera. Moving entities loop around the lane, so no objects are created during play. On slow devices the game lowers the pixel ratio first and then turns off shadows.
